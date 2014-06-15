@@ -14,9 +14,16 @@ found at http://www.jibble.org/licenses/
 
 package org.jibble.pircbot;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.io.BufferedWriter;
+import java.io.InputStream;
+import java.io.InterruptedIOException;
+import java.net.Socket;
+import java.nio.charset.Charset;
+
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A Thread which reads lines from the IRC server.  It then
@@ -29,20 +36,23 @@ import java.util.*;
  * @version    1.5.0 (Build time: Mon Dec 14 20:07:17 2009)
  */
 public class InputThread extends Thread {
+
+    private static Logger logger = LoggerFactory.getLogger(InputThread.class);
     
     /**
      * The InputThread reads lines from the IRC server and allows the
      * PircBot to handle them.
      *
      * @param bot An instance of the underlying PircBot.
-     * @param breader The BufferedReader that reads lines from the server.
+     * @param stream The InputStream that reads bytes from the server.
      * @param bwriter The BufferedWriter that sends lines to the server.
      */
-    InputThread(PircBot bot, Socket socket, BufferedReader breader, BufferedWriter bwriter) {
+    InputThread(PircBot bot, Socket socket, InputStream stream, BufferedWriter bwriter, String encoding) {
         _bot = bot;
         _socket = socket;
-        _breader = breader;
+        _stream = stream;
         _bwriter = bwriter;
+        _encoding = encoding;
         this.setName(this.getClass() + "-Thread");
     }
     
@@ -86,31 +96,42 @@ public class InputThread extends Thread {
             boolean running = true;
             while (running) {
                 try {
-                    String line = null;
-                    while ((line = _breader.readLine()) != null) {
-                        try {
-                            _bot.handleLine(line);
+                    byte[] buffer = new byte[PircBot.BUFFER_SIZE];
+                    int readBytes = -1;
+                    String overflow = "";
+                    while ((readBytes = _stream.read(buffer)) > -1) {
+                        String encoding = _bot.detect(buffer);
+                        if(logger.isDebugEnabled()) {
+                            logger.debug("detected encoding: {}, will choose: {}", encoding, StringUtils.isBlank(encoding) ? _encoding : encoding);
                         }
-                        catch (Throwable t) {
-                            // Stick the whole stack trace into a String so we can output it nicely.
-                            StringWriter sw = new StringWriter();
-                            PrintWriter pw = new PrintWriter(sw);
-                            t.printStackTrace(pw);
-                            pw.flush();
-                            StringTokenizer tokenizer = new StringTokenizer(sw.toString(), "\r\n");
-                            synchronized (_bot) {
-                                _bot.log("### Your implementation of PircBot is faulty and you have");
-                                _bot.log("### allowed an uncaught Exception or Error to propagate in your");
-                                _bot.log("### code. It may be possible for PircBot to continue operating");
-                                _bot.log("### normally. Here is the stack trace that was produced: -");
-                                _bot.log("### ");
-                                while (tokenizer.hasMoreTokens()) {
-                                    _bot.log("### " + tokenizer.nextToken());
+                        if (StringUtils.isBlank(encoding)) {
+                            encoding = _encoding;
+                        }
+
+                        String decodedBuffer = new String(buffer, 0, readBytes, Charset.forName(encoding));
+                        String[] lines = (overflow + decodedBuffer).split("\\r?\\n");
+
+                        // if the buffer does not end with a \n, then maybe the last sentence is not complete
+                        // We need to save this part for the next round.
+                        if(!decodedBuffer.endsWith("\n")) {
+                            overflow = lines[lines.length-1];
+                            lines = ArrayUtils.remove(lines, lines.length-1);
+                        } else {
+                            overflow = "";
+                        }
+
+                        for(String line: lines) {
+                            if(StringUtils.isNotBlank(line)) {
+                                try {
+                                    _bot.handleLine(line);
+                                } catch (Throwable t) {
+                                    logger.error("Your implementation of PircBot is Faulty ! " +
+                                            "PircBot will (possibly) continue operating, but you should check for the following error", t);
                                 }
                             }
                         }
                     }
-                    if (line == null) {
+                    if (readBytes == -1) {
                         // The server must have disconnected us.
                         running = false;
                     }
@@ -136,7 +157,7 @@ public class InputThread extends Thread {
         }
 
         if (!_disposed) {
-            _bot.log("*** Disconnected.");        
+            logger.info("*** Disconnected.");
             _isConnected = false;
             _bot.onDisconnect();
         }
@@ -159,10 +180,11 @@ public class InputThread extends Thread {
     
     private PircBot _bot = null;
     private Socket _socket = null;
-    private BufferedReader _breader = null;
+    private InputStream _stream = null;
     private BufferedWriter _bwriter = null;
     private boolean _isConnected = true;
     private boolean _disposed = false;
+    private String _encoding = null;
     
     public static final int MAX_LINE_LENGTH = 512;
     

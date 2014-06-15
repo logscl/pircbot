@@ -17,6 +17,9 @@ package org.jibble.pircbot;
 import java.io.*;
 import java.net.*;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * A Thread which is responsible for sending messages to the IRC server.
  * Messages are obtained from the outgoing message queue and sent
@@ -29,6 +32,8 @@ import java.net.*;
  * @version    1.5.0 (Build time: Mon Dec 14 20:07:17 2009)
  */
 public class OutputThread extends Thread {
+
+    private static Logger logger = LoggerFactory.getLogger(OutputThread.class);
     
     
     /**
@@ -52,10 +57,7 @@ public class OutputThread extends Thread {
      * the line to the log method of the supplied PircBot instance.
      * 
      * @param bot The underlying PircBot instance.
-     * @param out The BufferedOutputStream to write to.
      * @param line The line to be written. "\r\n" is appended to the end.
-     * @param encoding The charset to use when encoing this string into a
-     *                 byte array.
      */
     static void sendRawLine(PircBot bot, BufferedWriter bwriter, String line) {
         if (line.length() > bot.getMaxLineLength() - 2) {
@@ -65,7 +67,9 @@ public class OutputThread extends Thread {
             try {
                 bwriter.write(line + "\r\n");
                 bwriter.flush();
-                bot.log(">>>" + line);
+                if(logger.isDebugEnabled()) {
+                    logger.debug(">>> {}", line);
+                }
             }
             catch (Exception e) {
                 // Silent response - just lose the line.
